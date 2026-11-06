@@ -107,12 +107,32 @@ Exit codes: 0 on a clean stop, 1 on a runtime failure, 2 on a usage error.
 
 ## Development
 
+Everything runs through the Makefile (`make help` lists it all). Every build
+uses `-Wall -Wextra -Werror` and the rest of `WARN_CFLAGS`.
+
 ```sh
-make build            # build/ptt-gate
-make test             # cmocka unit suites
-make check            # build, test, ASan/UBSan, -fanalyzer, clang-tidy, shellcheck, hardening
+make build            # build/ptt-gate, hardened (-O2, FORTIFY, PIE, RELRO, canary)
+make test             # cmocka unit suites + CLI exit-code checks
+make test-asan        # the same under AddressSanitizer + LeakSanitizer
+make test-ubsan       # the same under UndefinedBehaviorSanitizer (aborts on the first finding)
+make test-valgrind    # the same under valgrind memcheck
+make analyze          # gcc -fanalyzer, clang-tidy, shellcheck
+make hardening-check  # assert the hardening reached the binary
+make check            # all of the above: what CI runs
+make live             # the real daemon for 5s under ASan, UBSan and valgrind, then SIGTERM
 make format
 ```
+
+Each checker gets its own build under `build/<checker>/`, without the
+hardening flags. FORTIFY gets in the sanitizers' way, and
+`-ftrivial-auto-var-init` would hide the uninitialised reads valgrind looks for.
+`make live` needs the keyd device and a running sound server, so it isn't part
+of `check`. It runs alongside the installed service without disturbing it.
+
+**valgrind on CachyOS:** the `znver4` repos build glibc with AVX-512, which
+valgrind can't decode, so every program dies with SIGILL in `ld.so` before
+`main` (try `valgrind /bin/true`). The valgrind targets detect this and print
+SKIPPED instead of failing. CI runs them for real on Ubuntu.
 
 The key handling, including the evdev `SYN_DROPPED` resync, is a pure state
 machine in [`src/ptt.c`](src/ptt.c), tested without a device or a sound server.

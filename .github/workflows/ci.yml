@@ -32,13 +32,21 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libpulse-dev libcmocka-dev shellcheck
+          sudo apt-get install -y --no-install-recommends libpulse-dev libcmocka-dev shellcheck valgrind
 
-      - name: Build and test with warnings as errors
-        run: make test CC=${{ matrix.cc }} EXTRA_CFLAGS=-Werror
+      # -Werror is part of the Makefile's WARN_CFLAGS, so every build below has it.
+      - name: Build and test
+        run: make test CC=${{ matrix.cc }}
 
-      - name: Re-run the suites under ASan/UBSan
+      - name: AddressSanitizer + LeakSanitizer
         run: make test-asan CC=${{ matrix.cc }}
+
+      - name: UndefinedBehaviorSanitizer
+        run: make test-ubsan CC=${{ matrix.cc }}
+
+      # Ubuntu's generic glibc is one valgrind can run, unlike CachyOS znver4.
+      - name: valgrind memcheck
+        run: make test-valgrind CC=${{ matrix.cc }}
 
       - name: Static analysis (-fanalyzer, clang-tidy, shellcheck)
         run: make analyze CC=${{ matrix.cc }}

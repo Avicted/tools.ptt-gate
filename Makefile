@@ -21,8 +21,10 @@ ld-option = $(shell printf 'int main(void){return 0;}' \
 BASE_CFLAGS := -std=c17 -Iinclude -D_POSIX_C_SOURCE=200809L -DPTT_GATE_VERSION='"$(VERSION)"' \
                $(shell pkg-config --cflags libpulse)
 
-# Shared by the release and sanitizer builds, so a warning cannot hide in one.
-WARN_CFLAGS := -Wall -Wextra -Wpedantic -Wshadow -Wvla -Wstrict-prototypes -Wpointer-arith \
+# Shared by every build -- release, tests, ASan, UBSan, valgrind -- so a warning
+# cannot hide in one of them. -Werror is on by default; `make EXTRA_CFLAGS=-Wno-error`
+# is the escape hatch for a newer compiler with a new warning.
+WARN_CFLAGS := -Wall -Wextra -Werror -Wpedantic -Wshadow -Wvla -Wstrict-prototypes -Wpointer-arith \
                -Wwrite-strings -Wconversion -Wsign-conversion -Wformat -Wformat-security \
                -Wcast-qual -Wmissing-prototypes -Wundef
 
@@ -41,26 +43,45 @@ LIBS         := $(shell pkg-config --libs libpulse)
 ALL_CFLAGS    = $(BASE_CFLAGS) $(WARN_CFLAGS) $(HARDEN_CFLAGS) $(CFLAGS) $(EXTRA_CFLAGS)
 ALL_LDFLAGS   = $(HARDEN_LDFLAGS) $(LDFLAGS)
 
-# FORTIFY and the other hardening flags are dropped: the sanitizers are the
-# check in this build, and FORTIFY interposes the very calls ASan wants to see.
-ASAN_CFLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1
-ASAN_FLAGS   = $(BASE_CFLAGS) $(WARN_CFLAGS) $(ASAN_CFLAGS) $(EXTRA_CFLAGS)
-# Without halt_on_error UBSan only prints and the run still exits 0.
-ASAN_ENV := ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+# --- runtime checkers ----------------------------------------------------------
+# One build per checker, under $(BUILD)/<checker>/. Each keeps WARN_CFLAGS but
+# drops the hardening flags: FORTIFY interposes the very calls ASan wants to
+# see, and -ftrivial-auto-var-init=zero would hide exactly the uninitialised
+# reads memcheck looks for. The checkers are separate builds rather than one
+# combined one because valgrind cannot run a sanitized binary at all.
+CHECKERS := asan ubsan vg
+
+SAN_COMMON   := -fno-omit-frame-pointer -g -O1
+asan_CFLAGS  := -fsanitize=address $(SAN_COMMON)
+# Without -fno-sanitize-recover UBSan only prints and the run still exits 0.
+ubsan_CFLAGS := -fsanitize=undefined -fno-sanitize-recover=all $(SAN_COMMON)
+vg_CFLAGS    := -g -O0
+
+# How each checker's binaries are run. Leaks count as errors everywhere; for
+# valgrind only definite/indirect ones, as libpulse keeps caches reachable on purpose.
+asan_RUN  := env ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1
+ubsan_RUN := env UBSAN_OPTIONS=print_stacktrace=1
+vg_RUN    := valgrind -q --error-exitcode=99 --leak-check=full --show-leak-kinds=definite,indirect \
+             --errors-for-leak-kinds=definite,indirect --track-origins=yes
+
+# The daemon itself, against the real input device and sound server, for
+# LIVE_SECONDS, then SIGTERM: a clean shutdown must exit 0 under every checker.
+LIVE_SECONDS ?= 5
 
 # cmocka is a test-time dependency only and never linked into $(BIN).
 CMOCKA_CFLAGS := $(shell pkg-config --cflags cmocka 2>/dev/null)
 CMOCKA_LIBS   := $(shell pkg-config --libs cmocka 2>/dev/null || echo -lcmocka)
 TEST_CFLAGS   := -Itests $(CMOCKA_CFLAGS)
 
-BUILD    := build
-BIN      := $(BUILD)/ptt-gate
-ASAN_BIN := $(BUILD)/asan_ptt-gate
+BUILD := build
+BIN   := $(BUILD)/ptt-gate
 
 # One cmocka suite per module, discovered rather than listed.
-TESTS      := $(sort $(patsubst tests/test_%.c,%,$(wildcard tests/test_*.c)))
-TEST_BINS  := $(addprefix $(BUILD)/test_,$(TESTS))
-ASAN_TESTS := $(addprefix $(BUILD)/asan_test_,$(TESTS))
+TESTS     := $(sort $(patsubst tests/test_%.c,%,$(wildcard tests/test_*.c)))
+TEST_BINS := $(addprefix $(BUILD)/test_,$(TESTS))
+
+# $(call checker_tests,asan) -> build/asan/test_options build/asan/test_ptt
+checker_tests = $(addprefix $(BUILD)/$(1)/test_,$(TESTS))
 
 LIB_SRC := src/ptt.c src/device.c src/gate.c src/options.c
 BIN_SRC := src/main.c $(LIB_SRC)
@@ -77,12 +98,20 @@ UNIT     := contrib/systemd/ptt-gate.service
 help:
 	@echo "Build:"
 	@echo "  build            compile $(BIN)"
-	@echo "  test             run the cmocka unit suites"
-	@echo "  test-asan        re-run the suites under ASan/UBSan"
+	@echo "  test             run the cmocka unit suites and CLI checks"
+	@echo "  test-asan        the same under AddressSanitizer (+ LeakSanitizer)"
+	@echo "  test-ubsan       the same under UndefinedBehaviorSanitizer"
+	@echo "  test-valgrind    the same under valgrind memcheck"
 	@echo "  analyze          -fanalyzer, clang-tidy and shellcheck"
 	@echo "  hardening-check  assert RELRO/NOW/PIE/canary/NX reached $(BIN)"
 	@echo "  format           clang-format the sources in place"
 	@echo "  check            all of the above (what CI runs)"
+	@echo ""
+	@echo "Live (needs the keyd device and a running sound server):"
+	@echo "  live-asan        run the real daemon $(LIVE_SECONDS)s under ASan, require a clean exit"
+	@echo "  live-ubsan       the same under UBSan"
+	@echo "  live-valgrind    the same under valgrind"
+	@echo "  live             all three"
 	@echo ""
 	@echo "Install:"
 	@echo "  setup            full system setup: keyd, input group, daemon (asks for sudo)"
@@ -101,28 +130,86 @@ $(BIN): $(BIN_SRC) $(HEADERS) VERSION
 	@mkdir -p $(BUILD)
 	$(CC) $(ALL_CFLAGS) -o $@ $(BIN_SRC) $(ALL_LDFLAGS) $(LIBS)
 
-$(ASAN_BIN): $(BIN_SRC) $(HEADERS) VERSION
-	@mkdir -p $(BUILD)
-	$(CC) $(ASAN_FLAGS) -o $@ $(BIN_SRC) $(LIBS)
-
 $(BUILD)/test_%: tests/test_%.c $(LIB_SRC) $(HEADERS) VERSION
 	@mkdir -p $(BUILD)
 	$(CC) $(ALL_CFLAGS) $(TEST_CFLAGS) -o $@ $< $(LIB_SRC) $(ALL_LDFLAGS) $(LIBS) $(CMOCKA_LIBS)
 
-$(BUILD)/asan_test_%: tests/test_%.c $(LIB_SRC) $(HEADERS) VERSION
-	@mkdir -p $(BUILD)
-	$(CC) $(ASAN_FLAGS) $(TEST_CFLAGS) -o $@ $< $(LIB_SRC) $(LIBS) $(CMOCKA_LIBS)
+# The daemon and test binaries for one checker: build/<checker>/...
+define checker_rules
+$(BUILD)/$(1)/ptt-gate: $(BIN_SRC) $(HEADERS) VERSION
+	@mkdir -p $$(@D)
+	$$(CC) $$(BASE_CFLAGS) $$(WARN_CFLAGS) $$($(1)_CFLAGS) $$(EXTRA_CFLAGS) -o $$@ $$(BIN_SRC) $$(LIBS)
+
+$(BUILD)/$(1)/test_%: tests/test_%.c $(LIB_SRC) $(HEADERS) VERSION
+	@mkdir -p $$(@D)
+	$$(CC) $$(BASE_CFLAGS) $$(WARN_CFLAGS) $$($(1)_CFLAGS) $$(EXTRA_CFLAGS) $$(TEST_CFLAGS) \
+		-o $$@ $$< $$(LIB_SRC) $$(LIBS) $$(CMOCKA_LIBS)
+endef
+$(foreach c,$(CHECKERS),$(eval $(call checker_rules,$(c))))
+
+# Recipe fragments. $(1) is the runner prefix (empty, an env assignment, or
+# valgrind), $(2) the binaries.
+run-suites = for t in $(2); do $(1) "$$t" || exit 1; done
+# The CLI paths the suites cannot reach: main's exit codes.
+run-cli = $(1) $(2) --version >/dev/null && $(1) $(2) --help >/dev/null \
+	&& { $(1) $(2) --bogus 2>/dev/null; [ $$? -eq 2 ]; } \
+	|| { echo "cli: $(2) failed (a usage error must exit 2, --help/--version 0)"; exit 1; }
+# --preserve-status: report the daemon's own exit code, not timeout's 124.
+run-live = echo "live: $(2) for $(LIVE_SECONDS)s"; \
+	timeout --preserve-status -s TERM $(LIVE_SECONDS) $(1) $(2) -v; rc=$$?; \
+	[ $$rc -eq 0 ] || { echo "live: $(2) exited $$rc, expected a clean 0"; exit 1; }; \
+	echo "live: $(2) shut down cleanly"
 
 .PHONY: test
 test: $(TEST_BINS) $(BIN)
-	@for t in $(TEST_BINS); do "$$t" || exit 1; done
-	@$(BIN) --version >/dev/null
-	@$(BIN) --bogus 2>/dev/null; [ $$? -eq 2 ] || { echo "test: expected exit 2 on a usage error"; exit 1; }
+	@$(call run-suites,,$(TEST_BINS))
+	@$(call run-cli,,$(BIN))
 
 .PHONY: test-asan
-test-asan: $(ASAN_TESTS) $(ASAN_BIN)
-	@for t in $(ASAN_TESTS); do $(ASAN_ENV) "$$t" || exit 1; done
-	@$(ASAN_ENV) $(ASAN_BIN) --help >/dev/null
+test-asan: $(call checker_tests,asan) $(BUILD)/asan/ptt-gate
+	@$(call run-suites,$(asan_RUN),$(call checker_tests,asan))
+	@$(call run-cli,$(asan_RUN),$(BUILD)/asan/ptt-gate)
+
+.PHONY: test-ubsan
+test-ubsan: $(call checker_tests,ubsan) $(BUILD)/ubsan/ptt-gate
+	@$(call run-suites,$(ubsan_RUN),$(call checker_tests,ubsan))
+	@$(call run-cli,$(ubsan_RUN),$(BUILD)/ubsan/ptt-gate)
+
+# valgrind has to be able to run anything at all first. It decodes no AVX-512,
+# so on a system whose glibc is built for it (CachyOS's znver4/v4 repos) every
+# dynamic binary dies with SIGILL inside ld.so before main. That is said loudly
+# and skipped there, rather than failing every `make check`; CI runs it for real.
+vg-usable = command -v valgrind >/dev/null || { echo "$@: valgrind is not installed"; exit 1; }; \
+	valgrind -q /bin/true 2>/dev/null || { \
+		echo "$@: SKIPPED -- valgrind cannot run any program on this system"; \
+		echo "$@: (glibc here uses AVX-512, which valgrind does not support; see 'valgrind /bin/true')"; \
+		exit 0; }
+
+.PHONY: test-valgrind
+test-valgrind: $(call checker_tests,vg) $(BUILD)/vg/ptt-gate
+	@$(vg-usable); \
+	$(call run-suites,$(vg_RUN),$(call checker_tests,vg)); \
+	$(call run-cli,$(vg_RUN),$(BUILD)/vg/ptt-gate)
+
+.PHONY: live-asan
+live-asan: $(BUILD)/asan/ptt-gate
+	@$(call run-live,$(asan_RUN),$<)
+
+.PHONY: live-ubsan
+live-ubsan: $(BUILD)/ubsan/ptt-gate
+	@$(call run-live,$(ubsan_RUN),$<)
+
+.PHONY: live-valgrind
+live-valgrind: $(BUILD)/vg/ptt-gate
+	@$(vg-usable); \
+	$(call run-live,$(vg_RUN),$<)
+
+# One after another even under -j: each run owns the real device and mic.
+.PHONY: live
+live:
+	@$(MAKE) --no-print-directory live-asan
+	@$(MAKE) --no-print-directory live-ubsan
+	@$(MAKE) --no-print-directory live-valgrind
 
 # The hardening flags are probed and silently dropped by compilers that lack
 # them; this is the check that makes a missing one visible.
@@ -170,7 +257,7 @@ format:
 	clang-format -i $(BIN_SRC) $(HEADERS) $(wildcard tests/*.c)
 
 .PHONY: check
-check: build test test-asan analyze hardening-check
+check: build test test-asan test-ubsan test-valgrind analyze hardening-check
 
 # --- install and system setup -----------------------------------------------
 
