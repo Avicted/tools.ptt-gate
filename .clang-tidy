@@ -1,0 +1,41 @@
+# Checks for `make analyze`, the same set as c-commit-checker. The C++-only and
+# header-guard-naming families are off: this is C, and the guards follow the
+# FILE_H convention.
+#
+# readability-braces-around-statements is redundant with clang-format's
+# InsertBraces. insecureAPI.DeprecatedOrUnsafeBufferHandling wants the C11
+# Annex K `_s` functions, which glibc does not implement. cert-err33-c wants
+# every fprintf return value checked; the calls that can fail are logs to
+# stderr, cast to (void) where the intent needs saying.
+#
+# easily-swappable-parameters fires on any two adjacent same-typed parameters,
+# which in C is most functions. assignment-in-if-condition rejects the
+# `(n = read(...)) > 0` loop idiom the input handler is built on.
+#
+# implicit-bool-conversion is a C++ check at heart: in C every comparison and
+# every && yields int, so each `return a == b && c;` from a bool function trips
+# it, and satisfying it means casts that say nothing.
+Checks: >
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -readability-braces-around-statements,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-avoid-nested-conditional-operator,
+  -misc-include-cleaner,
+  -llvmlibc-*,
+  -cppcoreguidelines-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -cert-err33-c,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-assignment-in-if-condition,
+  -readability-implicit-bool-conversion
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(include|src)/.*\.h$'
+FormatStyle: file

@@ -1,0 +1,32 @@
+# Mirrors .clang-format for C so editors and the formatter agree before
+# clang-format ever runs. .vscode/extensions.json recommends the EditorConfig
+# extension; this is the file it looks for.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,h}]
+indent_style = tab
+indent_size = 4
+max_line_length = 120
+
+[{*.yaml,*.yml,*.json,*.md}]
+indent_style = space
+indent_size = 2
+
+[*.sh]
+indent_style = tab
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+
+# Trailing whitespace is significant in Markdown line breaks, and the file is
+# a verbatim licence text.
+[LICENSE]
+trim_trailing_whitespace = false

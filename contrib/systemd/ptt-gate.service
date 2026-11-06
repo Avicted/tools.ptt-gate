@@ -1,0 +1,14 @@
+[Unit]
+Description=Push-to-talk mic gate (evdev -> PipeWire mute)
+Documentation=file://%h/projects/probe/ptt-gate/README.md
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire-pulse.service
+
+[Service]
+ExecStart=%h/.local/bin/ptt-gate
+# Exit 1 means the sound server went away; come back once it is up again.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
