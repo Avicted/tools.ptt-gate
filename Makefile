@@ -93,42 +93,17 @@ UNIT_DIR ?= $(HOME)/.config/systemd/user
 DOC_DIR  ?= $(PREFIX)/share/doc/ptt-gate
 UNIT     := contrib/systemd/ptt-gate.service
 
-.DEFAULT_GOAL := help
+BOLD  := \033[1m
+CYAN  := \033[36m
+RESET := \033[0m
 
-.PHONY: help
-help:
-	@echo "Build:"
-	@echo "  build            compile $(BIN)"
-	@echo "  test             run the cmocka unit suites and CLI checks"
-	@echo "  test-asan        the same under AddressSanitizer (+ LeakSanitizer)"
-	@echo "  test-ubsan       the same under UndefinedBehaviorSanitizer"
-	@echo "  test-valgrind    the same under valgrind memcheck"
-	@echo "  analyze          -fanalyzer, clang-tidy and shellcheck"
-	@echo "  hardening-check  assert RELRO/NOW/PIE/canary/NX reached $(BIN)"
-	@echo "  format           clang-format the sources in place"
-	@echo "  check            all of the above (what CI runs)"
-	@echo ""
-	@echo "Live (needs the keyd device and a running sound server):"
-	@echo "  live-asan        run the real daemon $(LIVE_SECONDS)s under ASan, require a clean exit"
-	@echo "  live-ubsan       the same under UBSan"
-	@echo "  live-valgrind    the same under valgrind"
-	@echo "  live             all three"
-	@echo ""
-	@echo "Install:"
-	@echo "  setup            full system setup: keyd, input group, daemon (asks for sudo)"
-	@echo "  install          install the daemon and its user unit, restart it"
-	@echo "  uninstall        remove the daemon and its user unit"
-	@echo "  doctor           check every piece push-to-talk depends on"
-	@echo ""
-	@echo "Release:"
-	@echo "  dist             build/$(DIST).tar.gz of HEAD, plus its sha256"
-	@echo ""
-	@echo "  clean            remove $(BUILD)"
+.DEFAULT_GOAL := help
 
 # --- build and tests ---------------------------------------------------------
 
+##@ Build and test
 .PHONY: build
-build: $(BIN)
+build: $(BIN) ## compile build/ptt-gate
 
 $(BIN): $(BIN_SRC) $(HEADERS) VERSION
 	@mkdir -p $(BUILD)
@@ -165,17 +140,17 @@ run-live = echo "live: $(2) for $(LIVE_SECONDS)s"; \
 	echo "live: $(2) shut down cleanly"
 
 .PHONY: test
-test: $(TEST_BINS) $(BIN)
+test: $(TEST_BINS) $(BIN) ## run the cmocka unit suites and CLI checks
 	@$(call run-suites,,$(TEST_BINS))
 	@$(call run-cli,,$(BIN))
 
 .PHONY: test-asan
-test-asan: $(call checker_tests,asan) $(BUILD)/asan/ptt-gate
+test-asan: $(call checker_tests,asan) $(BUILD)/asan/ptt-gate ## the same under AddressSanitizer (+ LeakSanitizer)
 	@$(call run-suites,$(asan_RUN),$(call checker_tests,asan))
 	@$(call run-cli,$(asan_RUN),$(BUILD)/asan/ptt-gate)
 
 .PHONY: test-ubsan
-test-ubsan: $(call checker_tests,ubsan) $(BUILD)/ubsan/ptt-gate
+test-ubsan: $(call checker_tests,ubsan) $(BUILD)/ubsan/ptt-gate ## the same under UndefinedBehaviorSanitizer
 	@$(call run-suites,$(ubsan_RUN),$(call checker_tests,ubsan))
 	@$(call run-cli,$(ubsan_RUN),$(BUILD)/ubsan/ptt-gate)
 
@@ -184,41 +159,43 @@ test-ubsan: $(call checker_tests,ubsan) $(BUILD)/ubsan/ptt-gate
 # dynamic binary dies with SIGILL inside ld.so before main. That is said loudly
 # and skipped there, rather than failing every `make check`; CI runs it for real.
 vg-usable = command -v valgrind >/dev/null || { echo "$@: valgrind is not installed"; exit 1; }; \
-	valgrind -q /bin/true 2>/dev/null || { \
+	( ulimit -c 0; valgrind -q /bin/true ) 2>/dev/null || { \
 		echo "$@: SKIPPED -- valgrind cannot run any program on this system"; \
 		echo "$@: (glibc here uses AVX-512, which valgrind does not support; see 'valgrind /bin/true')"; \
 		exit 0; }
 
 .PHONY: test-valgrind
-test-valgrind: $(call checker_tests,vg) $(BUILD)/vg/ptt-gate
+test-valgrind: $(call checker_tests,vg) $(BUILD)/vg/ptt-gate ## the same under valgrind memcheck
 	@$(vg-usable); \
 	$(call run-suites,$(vg_RUN),$(call checker_tests,vg)); \
 	$(call run-cli,$(vg_RUN),$(BUILD)/vg/ptt-gate)
 
+##@ Live (needs the keyd device and a running sound server)
 .PHONY: live-asan
-live-asan: $(BUILD)/asan/ptt-gate
+live-asan: $(BUILD)/asan/ptt-gate ## run the real daemon briefly under ASan, require a clean exit
 	@$(call run-live,$(asan_RUN),$<)
 
 .PHONY: live-ubsan
-live-ubsan: $(BUILD)/ubsan/ptt-gate
+live-ubsan: $(BUILD)/ubsan/ptt-gate ## the same under UBSan
 	@$(call run-live,$(ubsan_RUN),$<)
 
 .PHONY: live-valgrind
-live-valgrind: $(BUILD)/vg/ptt-gate
+live-valgrind: $(BUILD)/vg/ptt-gate ## the same under valgrind
 	@$(vg-usable); \
 	$(call run-live,$(vg_RUN),$<)
 
 # One after another even under -j: each run owns the real device and mic.
 .PHONY: live
-live:
+live: ## all three
 	@$(MAKE) --no-print-directory live-asan
 	@$(MAKE) --no-print-directory live-ubsan
 	@$(MAKE) --no-print-directory live-valgrind
 
 # The hardening flags are probed and silently dropped by compilers that lack
 # them; this is the check that makes a missing one visible.
+##@ Checks
 .PHONY: hardening-check
-hardening-check: $(BIN)
+hardening-check: $(BIN) ## assert RELRO/NOW/PIE/canary/NX reached the binary
 	@fail=0; \
 	want() { \
 		if readelf $$2 -W $(BIN) 2>/dev/null | grep -qE -- "$$3"; then echo "  ok    $$1"; \
@@ -238,7 +215,7 @@ hardening-check: $(BIN)
 	[ $$fail -eq 0 ] || { echo "hardening-check: the binary is missing hardening it should have"; exit 1; }
 
 .PHONY: analyze
-analyze:
+analyze: ## -fanalyzer, clang-tidy and shellcheck
 	@echo "analyze: $(CC) -fanalyzer"
 	@for f in $(BIN_SRC); do \
 		$(CC) $(ALL_CFLAGS) $(call cc-option,-fanalyzer) -Werror -c -o /dev/null "$$f" || exit 1; \
@@ -257,16 +234,17 @@ analyze:
 	fi
 
 .PHONY: format
-format:
+format: ## clang-format the sources in place
 	clang-format -i $(BIN_SRC) $(HEADERS) $(wildcard tests/*.c)
 
 .PHONY: check
-check: build test test-asan test-ubsan test-valgrind analyze hardening-check
+check: build test test-asan test-ubsan test-valgrind analyze hardening-check ## everything above except live (what CI runs)
 
 # --- install and system setup -----------------------------------------------
 
+##@ Install
 .PHONY: install
-install: $(BIN)
+install: $(BIN) ## install the daemon and its user unit, restart it
 	install -Dm755 $(BIN) $(PREFIX)/bin/ptt-gate
 	install -Dm644 $(UNIT) $(UNIT_DIR)/ptt-gate.service
 	install -Dm644 README.md $(DOC_DIR)/README.md
@@ -276,7 +254,7 @@ install: $(BIN)
 	systemctl --user restart ptt-gate
 
 .PHONY: uninstall
-uninstall:
+uninstall: ## remove the daemon and its user unit
 	-systemctl --user disable --now ptt-gate
 	rm -f $(PREFIX)/bin/ptt-gate $(UNIT_DIR)/ptt-gate.service
 	rm -rf $(DOC_DIR)
@@ -286,23 +264,33 @@ uninstall:
 	@echo "  input group membership    sudo gpasswd -d $$USER input, then log out and in"
 
 .PHONY: setup
-setup:
+setup: ## full system setup: keyd, input group, daemon (asks for sudo)
 	@./scripts/setup.sh
 
 .PHONY: doctor
-doctor:
+doctor: ## check every piece push-to-talk depends on
 	@./scripts/doctor.sh
 
 # Source tarball of the committed tree (uncommitted changes are not included).
 DIST := tools.ptt-gate-$(VERSION)
 
+##@ Release
 .PHONY: dist
-dist:
+dist: ## source tarball of HEAD, plus its sha256
 	@mkdir -p $(BUILD)
 	git archive --prefix=$(DIST)/ -o $(BUILD)/$(DIST).tar.gz HEAD
 	cd $(BUILD) && sha256sum $(DIST).tar.gz > $(DIST).tar.gz.sha256
 	@echo "$(BUILD)/$(DIST).tar.gz"
 
 .PHONY: clean
-clean:
+clean: ## remove build/
 	@rm -rf $(BUILD)
+
+##@ Help
+
+.PHONY: help
+help: ## show this menu
+	@awk 'BEGIN {FS = ":.*##"; printf "\n$(BOLD)ptt-gate $(VERSION)$(RESET)\n"} \
+	      /^[a-zA-Z_.-]+:.*?##/ { printf "  $(CYAN)%-18s$(RESET) %s\n", $$1, $$2 } \
+	      /^##@/ { printf "\n$(BOLD)%s$(RESET)\n", substr($$0, 5) }' $(MAKEFILE_LIST)
+	@printf "\n"
