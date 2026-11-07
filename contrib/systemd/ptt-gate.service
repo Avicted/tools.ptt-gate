@@ -1,6 +1,6 @@
 [Unit]
 Description=Push-to-talk mic gate (evdev -> PipeWire mute)
-Documentation=file://%h/projects/probe/ptt-gate/README.md
+Documentation=file://%h/.local/share/doc/ptt-gate/README.md
 After=pipewire.service pipewire-pulse.service wireplumber.service
 Wants=pipewire-pulse.service
 

@@ -90,6 +90,7 @@ SCRIPTS := $(wildcard scripts/*.sh)
 
 PREFIX   ?= $(HOME)/.local
 UNIT_DIR ?= $(HOME)/.config/systemd/user
+DOC_DIR  ?= $(PREFIX)/share/doc/ptt-gate
 UNIT     := contrib/systemd/ptt-gate.service
 
 .DEFAULT_GOAL := help
@@ -118,6 +119,9 @@ help:
 	@echo "  install          install the daemon and its user unit, restart it"
 	@echo "  uninstall        remove the daemon and its user unit"
 	@echo "  doctor           check every piece push-to-talk depends on"
+	@echo ""
+	@echo "Release:"
+	@echo "  dist             build/$(DIST).tar.gz of HEAD, plus its sha256"
 	@echo ""
 	@echo "  clean            remove $(BUILD)"
 
@@ -265,6 +269,8 @@ check: build test test-asan test-ubsan test-valgrind analyze hardening-check
 install: $(BIN)
 	install -Dm755 $(BIN) $(PREFIX)/bin/ptt-gate
 	install -Dm644 $(UNIT) $(UNIT_DIR)/ptt-gate.service
+	install -Dm644 README.md $(DOC_DIR)/README.md
+	install -Dm644 LICENSE $(DOC_DIR)/LICENSE
 	systemctl --user daemon-reload
 	systemctl --user enable ptt-gate
 	systemctl --user restart ptt-gate
@@ -273,6 +279,7 @@ install: $(BIN)
 uninstall:
 	-systemctl --user disable --now ptt-gate
 	rm -f $(PREFIX)/bin/ptt-gate $(UNIT_DIR)/ptt-gate.service
+	rm -rf $(DOC_DIR)
 	systemctl --user daemon-reload
 	@echo "Left in place (system-wide, shared with other tools):"
 	@echo "  /etc/keyd/default.conf    restore the .bak next to it, then: sudo keyd reload"
@@ -285,6 +292,16 @@ setup:
 .PHONY: doctor
 doctor:
 	@./scripts/doctor.sh
+
+# Source tarball of the committed tree (uncommitted changes are not included).
+DIST := tools.ptt-gate-$(VERSION)
+
+.PHONY: dist
+dist:
+	@mkdir -p $(BUILD)
+	git archive --prefix=$(DIST)/ -o $(BUILD)/$(DIST).tar.gz HEAD
+	cd $(BUILD) && sha256sum $(DIST).tar.gz > $(DIST).tar.gz.sha256
+	@echo "$(BUILD)/$(DIST).tar.gz"
 
 .PHONY: clean
 clean:

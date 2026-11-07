@@ -1,4 +1,6 @@
-# ptt-gate
+# tools.ptt-gate
+
+> The installed command, systemd unit and log name are all `ptt-gate`.
 
 Push-to-talk that works on KDE Plasma Wayland, including while a Proton game
 (WoW) has focus, by gating the microphone itself instead of asking Discord to
