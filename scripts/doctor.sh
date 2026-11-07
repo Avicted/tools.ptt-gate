@@ -3,7 +3,7 @@
 # whatever is broken. Run it first whenever push-to-talk misbehaves.
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 KEYD_CONF=/etc/keyd/default.conf
 DEVICE="keyd virtual keyboard"
